@@ -101,6 +101,20 @@ class TestAutomaticDowngrade(automatic_conversion_test_base.TestAutomaticConvers
         """,
         )
 
+    def test_Attention_25_24(self) -> None:
+        self._test_op_downgrade(
+            "Attention",
+            from_opset=25,
+            input_shapes=[[2, 3, 4, 8], [2, 3, 6, 8], [2, 3, 6, 8]],
+            output_shapes=[[2, 3, 4, 8]],
+            input_types=[
+                onnx.TensorProto.FLOAT,
+                onnx.TensorProto.FLOAT,
+                onnx.TensorProto.FLOAT,
+            ],
+            output_types=[onnx.TensorProto.FLOAT],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
