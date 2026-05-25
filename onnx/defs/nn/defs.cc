@@ -3278,7 +3278,7 @@ ONNX_OPERATOR_SET_SCHEMA(
           return true;
         }));
 
-static constexpr const char* Attention_ver24_doc = R"DOC(
+static constexpr const char* Attention_ver25_doc = R"DOC(
 
 Computes scaled dot product attention on query, key and value tensors, using an optional attention mask if passed.
 
@@ -3293,9 +3293,14 @@ This operator also covers the 3 following variants based on the number of heads:
 2) Group-query Attention (GQA): Described in the paper https://arxiv.org/pdf/2305.13245, `q_num_heads > kv_num_heads`, `q_num_heads % kv_num_heads == 0`.
 3) Multi-query Attention (MQA): Described in the paper https://arxiv.org/pdf/1911.02150, `q_num_heads > kv_num_heads`, `kv_num_heads=1`.
 
-Attention bias to be added is calculated based on `attn_mask` input and `is_causal` attribute:
+Attention bias to be added is calculated based on `attn_mask` input, `is_causal` attribute and `local_window_size` attribute:
 1) `attn_mask`: A boolean mask where a value of `True` indicates that the element should take part in attention or a float mask of the same type as query, key, value that is added to the attention score.
 2) If `is_causal` is set to `1`, attention scores above the diagonal are masked out, regardless of the `attn_mask` input.
+3) If `local_window_size` is set to a positive value, the op only attends to the most recent `local_window_size` key/value
+positions. Positions outside the window are masked (treated as -inf before softmax). When both `is_causal=1` and
+`local_window_size > 0`, the op applies a causal sliding window mask (each query attends to at most `local_window_size`
+preceding keys). When not set or set to -1, full attention is used. This enables efficient sliding window attention
+with static KV caches for models such as Gemma4, Mistral, and other hybrid attention architectures.
 
 With respect to KV cache update, this operator allows the following two use cases:
 
@@ -3339,9 +3344,9 @@ Q*sqrt(scale) K*sqrt(scale) |
 
 ONNX_OPERATOR_SET_SCHEMA(
     Attention,
-    24,
+    25,
     OpSchema()
-        .SetDoc(Attention_ver24_doc)
+        .SetDoc(Attention_ver25_doc)
         .Attr(
             "is_causal",
             "If set to `1`, the attention masking is a lower triangular matrix when the mask is a square matrix. "
@@ -3375,6 +3380,15 @@ ONNX_OPERATOR_SET_SCHEMA(
             "Softcap value for attention weights. Default value is 0.",
             AttributeProto::FLOAT,
             static_cast<float>(0))
+        .Attr(
+            "local_window_size",
+            "Size of the local sliding window for attention. When set to a positive value, "
+            "each query position only attends to the most recent `local_window_size` key positions. "
+            "Positions outside the window are masked with -inf before softmax. "
+            "When combined with `is_causal=1`, a causal sliding window mask is applied. "
+            "Default value is -1 (full attention).",
+            AttributeProto::INT,
+            static_cast<int64_t>(-1))
         .Attr(
             "qk_matmul_output_mode",
             "If set to `0`, qk_matmul_output is the output of qk matmul. "
@@ -3582,6 +3596,31 @@ ONNX_OPERATOR_SET_SCHEMA(
           if (!defs::nn::utils::AttentionAppendFunctionCausalMask(ctx, builder, true))
             return false;
 
+          // Apply sliding window mask if local_window_size is set
+          auto local_window_attr = ctx.getAttribute("local_window_size");
+          int64_t local_window_size = (local_window_attr != nullptr) ? local_window_attr->i() : -1;
+          if (local_window_size > 0) {
+            builder.Const1D("WindowSize", local_window_size)
+                .Const1D("WinZero", static_cast<int64_t>(0))
+                .Const1D("WinOne", static_cast<int64_t>(1))
+                .Add("WinZeroNoDim = Squeeze(WinZero, WinZero)")
+                .Add("WinOneNoDim = Squeeze(WinOne, WinZero)")
+                .Add("WinSeqLen = Squeeze(QSeqLen, WinZero)")
+                .Add("WinTotalSeqLen = Squeeze(NewKVSeqLen, WinZero)")
+                .Add("WinRangeRow = Range(WinZeroNoDim, WinSeqLen, WinOneNoDim)")
+                .Add("WinRangeRow2D = Unsqueeze(WinRangeRow, WinOne)")
+                .Add("WinRangeCol = Range(WinZeroNoDim, WinTotalSeqLen, WinOneNoDim)")
+                .Add("WinRangeCol2D = Unsqueeze(WinRangeCol, WinZero)")
+                .Add("WinRangeRowPast = Add(WinRangeRow2D, PastKVSeqLen)")
+                .Add("WinDiff = Sub(WinRangeRowPast, WinRangeCol2D)")
+                .Add("WindowSizeNoDim = Squeeze(WindowSize, WinZero)")
+                .Add("WinBoolMask = Less(WinDiff, WindowSizeNoDim)")
+                .Add("WinMask = Where(WinBoolMask, ScalarZero, FloatNegInf)")
+                .Add("AttnBiasCausalWindow = Add(AttnBiasCausalOrNot, WinMask)");
+          } else {
+            builder.Add("AttnBiasCausalWindow = Identity(AttnBiasCausalOrNot)");
+          }
+
           // Add padding mask if kv_nonpad_seqlen is provided
           if (ctx.hasInput(6)) {
             builder
@@ -3594,9 +3633,9 @@ ONNX_OPERATOR_SET_SCHEMA(
                 .Add("PaddingMaskFloat = Where(PaddingMaskBool, ScalarZero, FloatNegInf)") // [batch_size, KVSeqLen]
                 .Add("PaddingMask3D = Unsqueeze(PaddingMaskFloat, One1D)") // [batch_size, 1, KVSeqLen]
                 .Add("PaddingMask4D = Unsqueeze(PaddingMask3D, One1D)") // [batch_size, 1, 1, KVSeqLen]
-                .Add("AttnBiasCausalPad = Add(AttnBiasCausalOrNot, PaddingMask4D)");
+                .Add("AttnBiasCausalPad = Add(AttnBiasCausalWindow, PaddingMask4D)");
           } else {
-            builder.Add("AttnBiasCausalPad = Identity(AttnBiasCausalOrNot)");
+            builder.Add("AttnBiasCausalPad = Identity(AttnBiasCausalWindow)");
           }
           builder.Add("AttnBiasT = Cast (AttnBiasCausalPad)", "to", T1);
 

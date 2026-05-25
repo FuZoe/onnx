@@ -170,7 +170,7 @@ For an operator input/output's differentiability, it can be differentiable,
 |<a href="#Xor">Xor</a>|<a href="Changelog.md#Xor-7">7</a>, <a href="Changelog.md#Xor-1">1</a>|
 |**Function**|**Since version**|**Function version**|
 |<a href="#AffineGrid">AffineGrid</a>|<a href="Changelog.md#AffineGrid-20">20</a>|20|
-|<a href="#Attention">Attention</a>|<a href="Changelog.md#Attention-24">24</a>, <a href="Changelog.md#Attention-23">23</a>|24|
+|<a href="#Attention">Attention</a>|<a href="Changelog.md#Attention-25">25</a>, <a href="Changelog.md#Attention-24">24</a>, <a href="Changelog.md#Attention-23">23</a>|25|
 |<a href="#Bernoulli">Bernoulli</a>|<a href="Changelog.md#Bernoulli-22">22</a>, <a href="Changelog.md#Bernoulli-15">15</a>|22|
 |<a href="#BlackmanWindow">BlackmanWindow</a>|<a href="Changelog.md#BlackmanWindow-17">17</a>|17|
 |<a href="#CastLike">CastLike</a>|<a href="Changelog.md#CastLike-25">25</a>, <a href="Changelog.md#CastLike-24">24</a>, <a href="Changelog.md#CastLike-23">23</a>, <a href="Changelog.md#CastLike-21">21</a>, <a href="Changelog.md#CastLike-19">19</a>, <a href="Changelog.md#CastLike-15">15</a>|25|
@@ -1654,9 +1654,14 @@ expect(node, inputs=[x], outputs=[y], name="test_atanh")
   2) Group-query Attention (GQA): Described in the paper https://arxiv.org/pdf/2305.13245, `q_num_heads > kv_num_heads`, `q_num_heads % kv_num_heads == 0`.
   3) Multi-query Attention (MQA): Described in the paper https://arxiv.org/pdf/1911.02150, `q_num_heads > kv_num_heads`, `kv_num_heads=1`.
 
-  Attention bias to be added is calculated based on `attn_mask` input and `is_causal` attribute:
+  Attention bias to be added is calculated based on `attn_mask` input, `is_causal` attribute and `local_window_size` attribute:
   1) `attn_mask`: A boolean mask where a value of `True` indicates that the element should take part in attention or a float mask of the same type as query, key, value that is added to the attention score.
   2) If `is_causal` is set to `1`, attention scores above the diagonal are masked out, regardless of the `attn_mask` input.
+  3) If `local_window_size` is set to a positive value, the op only attends to the most recent `local_window_size` key/value
+  positions. Positions outside the window are masked (treated as -inf before softmax). When both `is_causal=1` and
+  `local_window_size > 0`, the op applies a causal sliding window mask (each query attends to at most `local_window_size`
+  preceding keys). When not set or set to -1, full attention is used. This enables efficient sliding window attention
+  with static KV caches for models such as Gemma4, Mistral, and other hybrid attention architectures.
 
   With respect to KV cache update, this operator allows the following two use cases:
 
@@ -1699,9 +1704,9 @@ expect(node, inputs=[x], outputs=[y], name="test_atanh")
 
 #### Version
 
-This version of the operator has been available since version 24 of the default ONNX operator set.
+This version of the operator has been available since version 25 of the default ONNX operator set.
 
-Other versions of this operator: <a href="Changelog.md#Attention-23">23</a>
+Other versions of this operator: <a href="Changelog.md#Attention-23">23</a>, <a href="Changelog.md#Attention-24">24</a>
 
 #### Attributes
 
@@ -1710,6 +1715,8 @@ Other versions of this operator: <a href="Changelog.md#Attention-23">23</a>
 <dd>If set to `1`, the attention masking is a lower triangular matrix when the mask is a square matrix. The attention masking has the form of the upper left causal bias due to the alignment.</dd>
 <dt><tt>kv_num_heads</tt> : int</dt>
 <dd>Number of heads of key and value. Must be used with 3D inputs of Q, K and V. </dd>
+<dt><tt>local_window_size</tt> : int (default is -1)</dt>
+<dd>Size of the local sliding window for attention. When set to a positive value, each query position only attends to the most recent `local_window_size` key positions. Positions outside the window are masked with -inf before softmax. When combined with `is_causal=1`, a causal sliding window mask is applied. Default value is -1 (full attention).</dd>
 <dt><tt>q_num_heads</tt> : int</dt>
 <dd>Number of heads of query. Must be used with 3D inputs of Q, K and V. </dd>
 <dt><tt>qk_matmul_output_mode</tt> : int (default is 0)</dt>
@@ -3573,6 +3580,96 @@ expect(
     outputs=[Y, present_key, present_value],
     name="test_attention_4d_gqa_with_past_and_present_fp16",
     opset_imports=[onnx.helper.make_opsetid("", 23)],
+)
+```
+
+</details>
+
+
+<details>
+<summary>attention_local_window</summary>
+
+```python
+node = onnx.helper.make_node(
+    "Attention",
+    inputs=["Q", "K", "V"],
+    outputs=["Y"],
+    local_window_size=3,
+)
+
+Q = np.random.rand(2, 3, 4, 8).astype(np.float32)
+K = np.random.rand(2, 3, 6, 8).astype(np.float32)
+V = np.random.rand(2, 3, 6, 8).astype(np.float32)
+
+Y, _, _, _ = _compute_attention(Q, K, V, local_window_size=3)
+
+expect(
+    node,
+    inputs=[Q, K, V],
+    outputs=[Y],
+    name="test_attention_4d_local_window",
+    opset_imports=[onnx.helper.make_opsetid("", 25)],
+)
+```
+
+</details>
+
+
+<details>
+<summary>attention_local_window_causal</summary>
+
+```python
+node = onnx.helper.make_node(
+    "Attention",
+    inputs=["Q", "K", "V"],
+    outputs=["Y"],
+    is_causal=1,
+    local_window_size=3,
+)
+
+Q = np.random.rand(2, 3, 6, 8).astype(np.float32)
+K = np.random.rand(2, 3, 6, 8).astype(np.float32)
+V = np.random.rand(2, 3, 6, 8).astype(np.float32)
+
+Y, _, _, _ = _compute_attention(
+    Q, K, V, is_causal=True, local_window_size=3
+)
+
+expect(
+    node,
+    inputs=[Q, K, V],
+    outputs=[Y],
+    name="test_attention_4d_local_window_causal",
+    opset_imports=[onnx.helper.make_opsetid("", 25)],
+)
+```
+
+</details>
+
+
+<details>
+<summary>attention_local_window_default</summary>
+
+```python
+node = onnx.helper.make_node(
+    "Attention",
+    inputs=["Q", "K", "V"],
+    outputs=["Y"],
+    local_window_size=-1,
+)
+
+Q = np.random.rand(2, 3, 4, 8).astype(np.float32)
+K = np.random.rand(2, 3, 6, 8).astype(np.float32)
+V = np.random.rand(2, 3, 6, 8).astype(np.float32)
+
+Y, _, _, _ = _compute_attention(Q, K, V, local_window_size=-1)
+
+expect(
+    node,
+    inputs=[Q, K, V],
+    outputs=[Y],
+    name="test_attention_4d_local_window_default",
+    opset_imports=[onnx.helper.make_opsetid("", 25)],
 )
 ```
 
