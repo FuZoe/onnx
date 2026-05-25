@@ -3334,7 +3334,7 @@ Q*sqrt(scale) K*sqrt(scale) |
             |               |
   softcap (if provided)     |
             |               |
- at_mask---Add              |
+ attn_mask--Add              |
             |               |
          Softmax            |
             |               |
@@ -3386,9 +3386,10 @@ ONNX_OPERATOR_SET_SCHEMA(
         .Attr(
             "local_window_size",
             "Size of the local sliding window for attention. When set to a positive value, "
-            "each query position only attends to the most recent `local_window_size` key positions. "
-            "Positions outside the window are masked with -inf before softmax. "
-            "When combined with `is_causal=1`, a causal sliding window mask is applied. "
+            "it limits how far back each query position can attend: positions where "
+            "`(past_sequence_length + query_index) - key_index >= local_window_size` are masked "
+            "with -inf before softmax. Future positions remain visible unless `is_causal=1` is also set. "
+            "When combined with `is_causal=1`, the result is a causal sliding window mask. "
             "Default value is -1 (full attention).",
             AttributeProto::INT,
             static_cast<int64_t>(-1))
@@ -3684,7 +3685,7 @@ ONNX_OPERATOR_SET_SCHEMA(
           //            |               |
           //  softcap (if provided)     |
           //            |               |
-          // at_mask---Add              |
+          // attn_mask--Add              |
           //            |               |
           //         Softmax            |
           //            |               |

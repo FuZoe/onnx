@@ -46,9 +46,10 @@ def _apply_causal(mask, past_sequence_length):
 def _apply_sliding_window(mask, local_window_size, past_sequence_length):
     """Applies a sliding window mask on the input `mask`.
 
-    For each query position i, only the most recent `local_window_size` key
-    positions are attended to. Positions where
+    Limits how far back each query position can attend. Positions where
     ``past_sequence_length + i - j >= local_window_size`` are masked with -inf.
+    Future positions (where j > past_sequence_length + i) remain visible;
+    use ``_apply_causal`` to also mask those.
     The modification is done inplace.
     """
     q_sequence_length, total_sequence_length = mask.shape[-2:]
