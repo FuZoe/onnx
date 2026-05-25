@@ -202,6 +202,27 @@ class TestAutomaticUpgrade(automatic_conversion_test_base.TestAutomaticConversio
             attrs={"softcap": 2.0},
         )
 
+    def test_Attention_9(self) -> None:
+        self._test_op_upgrade(
+            "Attention",
+            24,
+            [[2, 3, 4, 8], [2, 3, 6, 8], [2, 3, 6, 8]],
+            [[2, 3, 4, 8]],
+            [TensorProto.FLOAT, TensorProto.FLOAT, TensorProto.FLOAT],
+            [TensorProto.FLOAT],
+        )
+
+    def test_Attention_10(self) -> None:
+        self._test_op_upgrade(
+            "Attention",
+            24,
+            [[2, 3, 4, 8], [2, 3, 6, 8], [2, 3, 6, 8]],
+            [[2, 3, 4, 8]],
+            [TensorProto.FLOAT, TensorProto.FLOAT, TensorProto.FLOAT],
+            [TensorProto.FLOAT],
+            attrs={"is_causal": 1},
+        )
+
     def test_AveragePool(self) -> None:
         self._test_op_upgrade(
             "AveragePool",

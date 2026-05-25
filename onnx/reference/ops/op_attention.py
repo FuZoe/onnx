@@ -76,6 +76,23 @@ def _apply_causal(base, offset):
     return base + causal
 
 
+def _apply_sliding_window(mask, local_window_size, past_sequence_length):
+    """Applies a sliding window mask on the input `mask`.
+
+    For each query position i, only the most recent `local_window_size` key
+    positions are attended to. Positions where
+    ``past_sequence_length + i - j >= local_window_size`` are masked with -inf.
+    The modification is done inplace.
+    """
+    q_sequence_length, total_sequence_length = mask.shape[-2:]
+    row_idx = np.arange(q_sequence_length).reshape(-1, 1) + past_sequence_length
+    col_idx = np.arange(total_sequence_length).reshape(1, -1)
+    diff = row_idx - col_idx
+    window_mask = diff >= local_window_size
+    mask[..., window_mask] = -np.inf
+    return mask
+
+
 def _compute_attention(
     Q: np.ndarray,
     K: np.ndarray,
@@ -91,6 +108,7 @@ def _compute_attention(
     softmax_precision=None,
     softcap=None,
     qk_matmul_output_mode=None,
+    local_window_size=None,
 ) -> np.ndarray:
     assert len(Q.shape) == len(K.shape) == len(V.shape)
     # Set input tensors (Q, K, V) to the correct shape if input shape is 3D
@@ -196,6 +214,13 @@ def _compute_attention(
             attn_mask = (1 - attn_mask).astype(Q.dtype)
             attn_mask[attn_mask == 1] = -np.inf
         attn_bias = attn_bias + attn_mask
+
+    if local_window_size is not None and local_window_size > 0:
+        attn_bias = _apply_sliding_window(
+            attn_bias,
+            local_window_size,
+            past_sequence_length=past_key.shape[2] if past_key is not None else 0,
+        )
 
     if nonpad_kv_seqlen is not None:
         attn_bias = attn_bias.reshape(
@@ -317,6 +342,7 @@ class Attention(OpRun):
         softmax_precision=None,
         softcap=None,
         qk_matmul_output_mode=None,
+        local_window_size=None,
     ) -> np.ndarray:
         return _compute_attention(
             Q,
@@ -333,4 +359,5 @@ class Attention(OpRun):
             softmax_precision=softmax_precision,
             softcap=softcap,
             qk_matmul_output_mode=qk_matmul_output_mode,
+            local_window_size=local_window_size,
         )
