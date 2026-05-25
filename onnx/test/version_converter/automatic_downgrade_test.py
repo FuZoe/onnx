@@ -115,6 +115,18 @@ class TestAutomaticDowngrade(automatic_conversion_test_base.TestAutomaticConvers
             output_types=[onnx.TensorProto.FLOAT],
         )
 
+    def test_Attention_25_24_local_window_rejects(self) -> None:
+        self._test_model_conversion_fails(
+            to_opset=24,
+            model="""
+            <ir_version: 10, opset_import: [ "" : 25]>
+            attn (float[2, 3, 4, 8] Q, float[2, 3, 6, 8] K, float[2, 3, 6, 8] V) => (float[2, 3, 4, 8] Y)
+            {
+                Y = Attention <local_window_size = 2> (Q, K, V)
+            }
+        """,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
