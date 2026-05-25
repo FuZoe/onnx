@@ -31453,11 +31453,14 @@ This version of the operator has been available since version 24 of the default 
   Attention bias to be added is calculated based on `attn_mask` input, `is_causal` attribute and `local_window_size` attribute:
   1) `attn_mask`: A boolean mask where a value of `True` indicates that the element should take part in attention or a float mask of the same type as query, key, value that is added to the attention score.
   2) If `is_causal` is set to `1`, attention scores above the diagonal are masked out, regardless of the `attn_mask` input.
-  3) If `local_window_size` is set to a positive value, the op only attends to the most recent `local_window_size` key/value
-  positions. Positions outside the window are masked (treated as -inf before softmax). When both `is_causal=1` and
-  `local_window_size > 0`, the op applies a causal sliding window mask (each query attends to at most `local_window_size`
-  preceding keys). When not set or set to -1, full attention is used. This enables efficient sliding window attention
-  with static KV caches for models such as Gemma4, Mistral, and other hybrid attention architectures.
+  3) If `local_window_size` is set to a positive value, it limits how far back each query position can attend:
+  positions where ``(past_sequence_length + query_index) - key_index >= local_window_size`` are masked with -inf
+  before softmax. Note that this only restricts attention to past/older positions; without `is_causal=1`, future
+  positions (where key_index > past_sequence_length + query_index) are still visible. When both `is_causal=1` and
+  `local_window_size > 0`, the combined effect is a causal sliding window where each query attends to at most
+  `local_window_size` preceding keys and no future keys. When not set or set to -1, full attention is used.
+  This enables efficient sliding window attention with static KV caches for models such as Gemma4, Mistral,
+  and other hybrid attention architectures.
 
   With respect to KV cache update, this operator allows the following two use cases:
 
@@ -31488,7 +31491,7 @@ This version of the operator has been available since version 24 of the default 
               |               |
     softcap (if provided)     |
               |               |
-   at_mask---Add              |
+   attn_mask--Add              |
               |               |
            Softmax            |
               |               |
@@ -31510,7 +31513,7 @@ This version of the operator has been available since version 25 of the default 
 <dt><tt>kv_num_heads</tt> : int</dt>
 <dd>Number of heads of key and value. Must be used with 3D inputs of Q, K and V. </dd>
 <dt><tt>local_window_size</tt> : int (default is -1)</dt>
-<dd>Size of the local sliding window for attention. When set to a positive value, each query position only attends to the most recent `local_window_size` key positions. Positions outside the window are masked with -inf before softmax. When combined with `is_causal=1`, a causal sliding window mask is applied. Default value is -1 (full attention).</dd>
+<dd>Size of the local sliding window for attention. When set to a positive value, it limits how far back each query position can attend: positions where `(past_sequence_length + query_index) - key_index >= local_window_size` are masked with -inf before softmax. Future positions remain visible unless `is_causal=1` is also set. When combined with `is_causal=1`, the result is a causal sliding window mask. Default value is -1 (full attention).</dd>
 <dt><tt>q_num_heads</tt> : int</dt>
 <dd>Number of heads of query. Must be used with 3D inputs of Q, K and V. </dd>
 <dt><tt>qk_matmul_output_mode</tt> : int (default is 0)</dt>
