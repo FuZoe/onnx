@@ -2066,6 +2066,32 @@ class Attention(Base):
         )
 
     @staticmethod
+    def export_attention_local_window_with_attn_mask() -> None:
+        node = onnx.helper.make_node(
+            "Attention",
+            inputs=["Q", "K", "V", "attn_mask"],
+            outputs=["Y"],
+            local_window_size=3,
+        )
+
+        Q = np.random.rand(2, 3, 4, 8).astype(np.float32)
+        K = np.random.rand(2, 3, 6, 8).astype(np.float32)
+        V = np.random.rand(2, 3, 6, 8).astype(np.float32)
+        attn_mask = np.random.rand(2, 1, 1, 6).astype(np.float32)
+
+        Y, _, _, _ = _compute_attention(
+            Q, K, V, attn_mask=attn_mask, local_window_size=3
+        )
+
+        expect(
+            node,
+            inputs=[Q, K, V, attn_mask],
+            outputs=[Y],
+            name="test_attention_4d_local_window_with_attn_mask",
+            opset_imports=[onnx.helper.make_opsetid("", 25)],
+        )
+
+    @staticmethod
     def export_attention_local_window_default() -> None:
         node = onnx.helper.make_node(
             "Attention",
