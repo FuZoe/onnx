@@ -3388,7 +3388,7 @@ ONNX_OPERATOR_SET_SCHEMA(
             "Size of the local sliding window for attention. When set to a positive value, "
             "it limits how far back each query position can attend: positions where "
             "`(past_sequence_length + query_index) - key_index >= local_window_size` are masked "
-            "with -inf before softmax. With `is_causal=1`, each query attends to exactly "
+            "with -inf before softmax. With `is_causal=1`, each query attends to at most "
             "`local_window_size` keys including itself (diff values 0 through local_window_size-1). "
             "Future positions remain visible unless `is_causal=1` is also set. "
             "Default value is -1 (full attention).",
