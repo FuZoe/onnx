@@ -3612,15 +3612,50 @@ ONNX_OPERATOR_SET_SCHEMA(
                 .Add("WinSeqLen = Squeeze(QSeqLen, WinZero)")
                 .Add("WinTotalSeqLen = Squeeze(NewKVSeqLen, WinZero)")
                 .Add("WinRangeRow = Range(WinZeroNoDim, WinSeqLen, WinOneNoDim)")
-                .Add("WinRangeRow2D = Unsqueeze(WinRangeRow, WinOne)")
-                .Add("WinRangeCol = Range(WinZeroNoDim, WinTotalSeqLen, WinOneNoDim)")
-                .Add("WinRangeCol2D = Unsqueeze(WinRangeCol, WinZero)")
-                .Add("WinRangeRowPast = Add(WinRangeRow2D, PastKVSeqLen)")
-                .Add("WinDiff = Sub(WinRangeRowPast, WinRangeCol2D)")
-                .Add("WindowSizeNoDim = Squeeze(WindowSize, WinZero)")
-                .Add("WinBoolMask = Less(WinDiff, WindowSizeNoDim)")
-                .Add("WinMask = Where(WinBoolMask, ScalarZero, FloatNegInf)")
-                .Add("AttnBiasCausalWindow = Add(AttnBiasCausalOrNot, WinMask)");
+                .Add("WinRangeCol = Range(WinZeroNoDim, WinTotalSeqLen, WinOneNoDim)");
+
+            if (ctx.hasInput(6) && !ctx.hasInput(4)) {
+              builder.Const("WinAxes01", std::vector<int64_t>{0, 1})
+                  .Const("WinAxes123", std::vector<int64_t>{1, 2, 3})
+                  .Add("WinOffset4D = Unsqueeze(CausalOffsetPerBatch, WinAxes123)") // (batch, 1, 1, 1)
+                  .Add("WinRow2D = Unsqueeze(WinRangeRow, WinOne)") // (q, 1)
+                  .Add("WinRow4D = Unsqueeze(WinRow2D, WinAxes01)") // (1, 1, q, 1)
+                  .Add("WinCol2D = Unsqueeze(WinRangeCol, WinZero)") // (1, total)
+                  .Add("WinCol4D = Unsqueeze(WinCol2D, WinAxes01)") // (1, 1, 1, total)
+                  .Add("WinAbsPos = Add(WinRow4D, WinOffset4D)") // (batch, 1, q, 1)
+                  .Add("WinDiff = Sub(WinAbsPos, WinCol4D)"); // (batch, 1, q, total)
+
+              // WinMask will be 4D (batch, 1, q, total).  AttnBiasCausalOrNot may be
+              // 3D if attn_mask was 3D and is_causal was off.  Promote to 4D.
+              int win_mask_rank = -1; // unknown
+              if (ctx.hasInput(3)) {
+                const auto* mask_type = ctx.getInputType(3);
+                if (mask_type && mask_type->has_tensor_type() && mask_type->tensor_type().has_shape()) {
+                  win_mask_rank = mask_type->tensor_type().shape().dim_size();
+                }
+              }
+              if (win_mask_rank == 3) {
+                builder.Add("CausalOrNot4D = Unsqueeze(AttnBiasCausalOrNot, WinOne)");
+              } else if (win_mask_rank == 4) {
+                builder.Add("CausalOrNot4D = Identity(AttnBiasCausalOrNot)");
+              } else {
+                builder.Add("WinBiasShape4D = Concat <axis=0> (NegOne1D, One1D, QSeqLen, NewKVSeqLen)")
+                    .Add("CausalOrNot4D = Reshape(AttnBiasCausalOrNot, WinBiasShape4D)");
+              }
+            } else {
+              builder.Add("WinRow2D = Unsqueeze(WinRangeRow, WinOne)") // (q, 1)
+                  .Add("WinCol2D = Unsqueeze(WinRangeCol, WinZero)") // (1, total)
+                  .Add("WinAbsPos = Add(WinRow2D, PastKVSeqLen)") // (q, 1)
+                  .Add("WinDiff = Sub(WinAbsPos, WinCol2D)"); // (q, total)
+              // WinMask is 2D -- broadcasts correctly with any-rank AttnBiasCausalOrNot.
+              builder.Add("CausalOrNot4D = Identity(AttnBiasCausalOrNot)");
+            }
+            builder.Add("WindowSizeNoDim = Squeeze(WindowSize, WinZero)")
+                .Add("WinGe0 = GreaterOrEqual(WinDiff, WinZeroNoDim)")
+                .Add("WinLtW = Less(WinDiff, WindowSizeNoDim)")
+                .Add("WinOk = And(WinGe0, WinLtW)")
+                .Add("WinMask = Where(WinOk, ScalarZero, FloatNegInf)")
+                .Add("AttnBiasCausalWindow = Add(CausalOrNot4D, WinMask)");
           } else {
             builder.Add("AttnBiasCausalWindow = Identity(AttnBiasCausalOrNot)");
           }

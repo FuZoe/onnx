@@ -240,13 +240,37 @@ bool AttentionAppendFunctionCausalMask(const FunctionBodyBuildContext& ctx, Func
           .Add("OffsetB4D = Unsqueeze(CausalOffsetPerBatch, Axes123)") // (batch, 1, 1, 1)
           .Add("RowPlusOff = Add(RangeRow4D, OffsetB4D)") // (batch, 1, q, 1)
           .Add("BoolMaskTri = Less(RowPlusOff, RangeCol4D)"); // (batch, 1, q, total)
+
+      // MaskTri is 4D (batch, 1, q, total).  AttnBias may be 3D (batch, q, kv)
+      // which does not broadcast correctly against a 4D tensor.  Promote AttnBias
+      // to 4D at build time based on the known rank of the attn_mask input.
+      int mask_rank = -1; // unknown
+      if (ctx.hasInput(3)) {
+        const auto* mask_type = ctx.getInputType(3);
+        if (mask_type && mask_type->has_tensor_type() && mask_type->tensor_type().has_shape()) {
+          mask_rank = mask_type->tensor_type().shape().dim_size();
+        }
+      }
+      if (mask_rank == 3) {
+        // 3D (batch, q, kv) -> Unsqueeze at dim 1 -> (batch, 1, q, kv)
+        builder.Add("AttnBias4D = Unsqueeze(AttnBias, One)");
+      } else if (mask_rank == 4) {
+        // 4D (batch, heads, q, kv) -> already correct
+        builder.Add("AttnBias4D = Identity(AttnBias)");
+      } else {
+        // rank unknown or <= 2: Reshape to (-1, 1, q, kv) -- safe fallback
+        builder.Add("BiasShape4D = Concat <axis=0> (NegOne1D, One1D, QSeqLen, NewKVSeqLen)")
+            .Add("AttnBias4D = Reshape(AttnBias, BiasShape4D)");
+      }
     } else {
       // Internal cache / no cache: scalar offset (PastKVSeqLen), 2D (q, total) mask.
       builder.Add("RangeRow2DPast = Add(RangeRow2D, PastKVSeqLen)")
           .Add("BoolMaskTri = Less(RangeRow2DPast, RangeCol2D)");
+      // MaskTri is 2D (q, total) -- broadcasts correctly with any-rank AttnBias.
+      builder.Add("AttnBias4D = Identity(AttnBias)");
     }
     builder.Add("MaskTri = Where(BoolMaskTri, FloatNegInf, ScalarZero)")
-        .Add("AttnBiasCausalOrNot = Add(AttnBias, MaskTri)");
+        .Add("AttnBiasCausalOrNot = Add(AttnBias4D, MaskTri)");
   } else {
     builder.Add("AttnBiasCausalOrNot = Identity(AttnBias)");
   }
